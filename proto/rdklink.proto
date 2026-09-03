@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package rdklink.v1;
+
+service RdkLinkAgent {
+  rpc GetStatus(StatusRequest) returns (StatusReply);
+  rpc ListFiles(FileRequest) returns (FileListReply);
+  rpc ReadFile(FileRequest) returns (FileReply);
+  rpc WriteFile(WriteFileRequest) returns (MutationReply);
+  rpc RunProcess(RunProcessRequest) returns (ProcessReply);
+  rpc StopProcess(ProcessRequest) returns (MutationReply);
+  rpc ReadSerial(SerialRequest) returns (SerialReply);
+}
+
+message StatusRequest {}
+message StatusReply { string device_id = 1; string model = 2; string state = 3; }
+message FileRequest { string path = 1; }
+message FileListReply { repeated string paths = 1; }
+message FileReply { bytes content = 1; }
+message WriteFileRequest { string path = 1; bytes content = 2; }
+message MutationReply { bool ok = 1; string message = 2; }
+message RunProcessRequest { string command = 1; string cwd = 2; }
+message ProcessRequest { int32 pid = 1; }
+message ProcessReply { int32 pid = 1; string state = 2; string output = 3; }
+message SerialRequest { string port = 1; int32 baudrate = 2; int32 max_lines = 3; }
+message SerialReply { repeated string lines = 1; }
+

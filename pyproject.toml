@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rdklink"
+version = "0.1.0"
+description = "Windows control plane and MCP bridge for RDK X5"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+rdklink-agent = "rdklink.agent:main"
+rdklink-service = "rdklink.service_server:main"
+rdklink-cli = "rdklink.cli:main"
+rdklink-mcp = "rdklink.mcp_server:main"
+rdklink-gui = "rdklink.gui:main"
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+serial = ["pyserial>=3.5"]
+
+[tool.setuptools.packages.find]
+include = ["rdklink*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
