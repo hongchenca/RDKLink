@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+MAX_CONFIG_BYTES = 1 * 1024 * 1024
+
 
 class ConfigStore:
     """管理 %USERPROFILE%/.rdklink 下的 YAML 配置和日志目录。"""
@@ -19,9 +21,13 @@ class ConfigStore:
         if not path.exists():
             return default
         try:
-            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+            with path.open("rb") as source:
+                data = source.read(MAX_CONFIG_BYTES + 1)
+            if len(data) > MAX_CONFIG_BYTES:
+                return default
+            loaded = yaml.safe_load(data.decode("utf-8"))
             return default if loaded is None else loaded
-        except (OSError, yaml.YAMLError):
+        except (OSError, UnicodeError, yaml.YAMLError):
             return default
 
     def save(self, name: str, value: Any) -> None:

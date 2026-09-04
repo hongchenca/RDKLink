@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import time
@@ -10,6 +11,10 @@ from .models import AgentConfig
 from .protocol import request
 from .config import ConfigStore
 from .activity import ActivityLog
+
+MAX_PROJECT_FILES = 2000
+MAX_PROJECT_FILE_BYTES = 4 * 1024 * 1024
+MAX_PROJECT_BYTES = 128 * 1024 * 1024
 
 
 class RdkLinkService:
@@ -26,7 +31,7 @@ class RdkLinkService:
         timeout = self.config.timeout
         if method == "serial_wait":
             timeout = max(timeout, min(float((params or {}).get("timeout", 10)) + 2, 125))
-        summary = {k: (f"<{len(str(v))} chars>" if k == "content" else v) for k, v in (params or {}).items()}
+        summary = {k: (f"<{len(str(v))} chars>" if k in {"content", "content_base64"} else v) for k, v in (params or {}).items()}
         try:
             value = request(self.config.host, self.config.port, method, params, timeout)
             self.activity.record(os.environ.get("RDKLINK_SOURCE", "SYSTEM"), method, self.config.host, summary, value.get("ok", True), int((time.monotonic() - started) * 1000))
@@ -64,23 +69,47 @@ class RdkLinkService:
         if not root.is_dir():
             raise ValueError(f"local_path is not a directory: {root}")
         ignored = {".git", ".venv", "__pycache__", "node_modules"}
-        local_files = {}
+        local_files: dict[str, tuple[str, int, Path]] = {}
+        total_bytes = 0
+        total_name_bytes = 0
         for path in root.rglob("*"):
-            if not path.is_file() or any(part in ignored for part in path.parts):
+            if path.is_symlink() or not path.is_file() or any(part in ignored for part in path.parts):
                 continue
             rel = path.relative_to(root).as_posix()
-            data = path.read_bytes()
-            local_files[rel] = (hashlib.sha256(data).hexdigest(), data)
+            if len(local_files) >= MAX_PROJECT_FILES:
+                raise ValueError(f"project exceeds {MAX_PROJECT_FILES} files")
+            total_name_bytes += len(rel.encode("utf-8"))
+            if total_name_bytes > 512 * 1024:
+                raise ValueError("project paths exceed 524288 response bytes")
+            stat_size = path.stat().st_size
+            if stat_size > MAX_PROJECT_FILE_BYTES:
+                raise ValueError(f"project file exceeds {MAX_PROJECT_FILE_BYTES} bytes: {rel}")
+            digest = hashlib.sha256()
+            actual_size = 0
+            with path.open("rb") as source:
+                while chunk := source.read(64 * 1024):
+                    actual_size += len(chunk)
+                    if actual_size > MAX_PROJECT_FILE_BYTES:
+                        raise ValueError(f"project file exceeds {MAX_PROJECT_FILE_BYTES} bytes: {rel}")
+                    digest.update(chunk)
+            total_bytes += actual_size
+            if total_bytes > MAX_PROJECT_BYTES:
+                raise ValueError(f"project exceeds {MAX_PROJECT_BYTES} bytes")
+            local_files[rel] = (digest.hexdigest(), actual_size, path)
         remote_files = set(self.call("list_files", {"path": remote_path}).get("files", []))
         changed = []
         uploaded_bytes = 0
-        for rel, (digest, data) in local_files.items():
+        for rel, (digest, size, path) in local_files.items():
             target = f"{remote_path.rstrip('/')}/{rel}"
-            current = self.call("read_file", {"path": target}) if target in remote_files else None
+            current = self.call("file_info", {"path": target}) if target in remote_files else None
             if not current or current.get("sha256") != digest:
-                self.call("write_file", {"path": target, "content": data.decode("utf-8")})
+                with path.open("rb") as source:
+                    data = source.read(MAX_PROJECT_FILE_BYTES + 1)
+                if len(data) > MAX_PROJECT_FILE_BYTES:
+                    raise ValueError(f"project file exceeds {MAX_PROJECT_FILE_BYTES} bytes: {rel}")
+                self.call("write_file", {"path": target, "content_base64": base64.b64encode(data).decode("ascii")})
                 changed.append(rel)
-                uploaded_bytes += len(data)
+                uploaded_bytes += size
         removed = []
         if delete:
             for target in sorted(remote_files):
@@ -97,8 +126,12 @@ class RdkLinkService:
     def project_stop(self, pid: int) -> dict[str, Any]:
         return self.call("stop_process", {"pid": pid})
 
-    def serial_tail(self, max_lines: int = 100, port: str | None = None, baudrate: int = 115200) -> dict[str, Any]:
-        return self.call("serial_tail", {"max_lines": max_lines, "port": port, "baudrate": baudrate})
+    def serial_tail(self, max_records: int = 100, port: str | None = None, baudrate: int = 115200, *, max_lines: int | None = None) -> dict[str, Any]:
+        if max_lines is not None:
+            max_records = max_lines
+        return self.call("serial_tail", {"max_records": max_records, "port": port, "baudrate": baudrate})
 
-    def serial_wait(self, contains: str, timeout: float = 10, max_lines: int = 100, port: str | None = None, baudrate: int = 115200) -> dict[str, Any]:
-        return self.call("serial_wait", {"contains": contains, "timeout": timeout, "max_lines": max_lines, "port": port, "baudrate": baudrate})
+    def serial_wait(self, contains: str, timeout: float = 10, max_records: int = 100, port: str | None = None, baudrate: int = 115200, *, max_lines: int | None = None, include_tx: bool = False) -> dict[str, Any]:
+        if max_lines is not None:
+            max_records = max_lines
+        return self.call("serial_wait", {"contains": contains, "timeout": timeout, "max_records": max_records, "port": port, "baudrate": baudrate, "include_tx": include_tx})

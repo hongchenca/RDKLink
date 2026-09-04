@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,8 +17,9 @@ class ProcessInfo:
     pid: int
     command: str
     state: str = "running"
-    output: list[str] = field(default_factory=list)
-    output_records: list[dict[str, str]] = field(default_factory=list)
+    output: deque[str] = field(default_factory=lambda: deque(maxlen=200))
+    output_records: deque[dict[str, str]] = field(default_factory=lambda: deque(maxlen=200))
+    output_record_count: int = 0
     returncode: int | None = None
 
 

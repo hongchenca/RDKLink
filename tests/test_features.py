@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 from rdklink.agent import Agent
 from rdklink.models import AgentConfig
@@ -37,6 +41,8 @@ class FeatureTest(unittest.TestCase):
     def test_project_run_does_not_use_shell(self):
         with self.assertRaises(Exception):
             self.s.project_run("echo SAFE > escaped.txt")
+        with self.assertRaises(Exception):
+            self.s.project_run("cmd.exe /c echo SAFE")
 
     def test_project_manifest_diff(self):
         with tempfile.TemporaryDirectory() as src:
@@ -44,6 +50,38 @@ class FeatureTest(unittest.TestCase):
             Path(src, "a.txt").write_text("a", encoding="utf-8")
             self.assertEqual(self.s.project_push(src, "manifest")["uploaded"], 1)
             self.assertEqual(self.s.project_push(src, "manifest")["uploaded"], 0)
+
+    def test_binary_file_push_and_process_output_are_bounded(self):
+        with tempfile.TemporaryDirectory() as src:
+            Path(src, "blob.bin").write_bytes(bytes(range(256)))
+            self.assertEqual(self.s.project_push(src, "binary")["uploaded"], 1)
+            remote = self.s.call("file_info", {"path": "binary/blob.bin"})
+            self.assertEqual(remote["sha256"], hashlib.sha256(bytes(range(256))).hexdigest())
+            Path(src, "too-large.bin").write_bytes(b"x" * (4 * 1024 * 1024 + 1))
+            with self.assertRaises(ValueError):
+                self.s.project_push(src, "binary")
+        command = subprocess.list2cmdline([sys.executable, "-c", "import sys; print('x' * 20000); print('err', file=sys.stderr)"])
+        started = self.s.project_run(command, ".")
+        output = {}
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            output = self.s.call("process_output", {"pid": started["pid"], "max_lines": 1000})
+            if output["state"] == "exited":
+                break
+            time.sleep(.05)
+        self.assertLessEqual(len(output["records"]), 200)
+        self.assertTrue(all(len(item["text"].encode()) <= 16_384 for item in output["records"]))
+        self.assertEqual({item["stream"] for item in output["records"]}, {"stdout", "stderr"})
+
+    def test_serial_is_port_scoped_and_bounded(self):
+        self.s.call("serial_open", {"port": "MOCK0"})
+        self.s.call("serial_write", {"port": "MOCK0", "data": "PING"})
+        result = self.s.call("serial_wait", {"port": "MOCK0", "pattern": "PONG", "timeout": 1, "max_records": 1})
+        self.assertTrue(result["matched"])
+        self.assertEqual(len(result["records"]), 1)
+        self.assertEqual(result["records"][0]["port"], "MOCK0")
+        with self.assertRaises(Exception):
+            self.s.call("serial_read_since", {"port": "NOT_ALLOWED", "sequence": 0})
 
 
 if __name__ == "__main__": unittest.main()

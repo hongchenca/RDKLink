@@ -13,6 +13,8 @@ from .config import ConfigStore
 from .models import AgentConfig
 from .service import RdkLinkService
 
+MAX_SERVICE_REQUEST_BYTES = 64 * 1024
+
 
 class LocalServiceServer:
     """Windows 本地服务：GUI、CLI 和 MCP 的唯一业务入口。"""
@@ -34,8 +36,8 @@ class LocalServiceServer:
         if method == "process_output": return self.core.call("process_output", params)
         if method == "remote_file_read": return self.core.call("read_file", params)
         if method in {"serial_list", "serial_open", "serial_close", "serial_read_since", "serial_write"}: return self.core.call(method, params)
-        if method == "serial_tail": return self.core.serial_tail(params.get("max_records", 100), params.get("port"), params.get("baudrate", 115200))
-        if method == "serial_wait": return self.core.serial_wait(params["pattern"], params.get("timeout", 10), params.get("max_records", 100), params.get("port"), params.get("baudrate", 115200))
+        if method == "serial_tail": return self.core.serial_tail(params.get("max_records", params.get("max_lines", 100)), params.get("port"), params.get("baudrate", 115200))
+        if method == "serial_wait": return self.core.serial_wait(params["pattern"], params.get("timeout", 10), params.get("max_records", params.get("max_lines", 100)), params.get("port"), params.get("baudrate", 115200), include_tx=bool(params.get("include_tx", False)))
         raise ValueError(f"unknown service method: {method}")
 
     async def client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -45,13 +47,14 @@ class LocalServiceServer:
                 try:
                     request = json.loads(line); output = await asyncio.to_thread(self.dispatch, request["method"], request.get("params", {})); response = {"id": request.get("id"), "result": output}
                 except Exception as exc:
-                    response = {"id": request.get("id"), "error": {"code": getattr(exc, "code", exc.__class__.__name__), "message": str(exc)}}
+                    request_id = request.get("id") if isinstance(request, dict) else None
+                    response = {"id": request_id, "error": {"code": getattr(exc, "code", exc.__class__.__name__), "message": str(exc)}}
                 writer.write((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8")); await writer.drain()
         finally:
             writer.close(); await writer.wait_closed()
 
     async def serve(self, host: str, port: int) -> None:
-        server = await asyncio.start_server(self.client, host, port)
+        server = await asyncio.start_server(self.client, host, port, limit=MAX_SERVICE_REQUEST_BYTES)
         async with server:
             await self._shutdown.wait()
 

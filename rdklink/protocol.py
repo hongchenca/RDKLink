@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import socket
 from typing import Any
-from .errors import DeviceOfflineError, InvalidPathError, PermissionDeniedError, ProcessNotFoundError
+from .errors import DeviceOfflineError, InvalidPathError, PermissionDeniedError, ProcessNotFoundError, SerialConfigurationConflictError
+
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 class ProtocolError(RuntimeError):
@@ -24,12 +26,14 @@ def request(host: str, port: int, method: str, params: dict[str, Any] | None = N
             chunk = sock.recv(65536)
             if not chunk:
                 break
+            if len(buf) + len(chunk) > MAX_RESPONSE_BYTES:
+                raise ProtocolError(f"response exceeds {MAX_RESPONSE_BYTES} bytes")
             buf.extend(chunk)
         if not buf:
             raise ProtocolError("agent closed connection without a response")
     response = json.loads(bytes(buf).split(b"\n", 1)[0].decode("utf-8"))
     if response.get("error"):
         error = response["error"]
-        error_type = {"permission_denied": PermissionDeniedError, "invalid_path": InvalidPathError, "process_not_found": ProcessNotFoundError}.get(error.get("code"), ProtocolError)
+        error_type = {"permission_denied": PermissionDeniedError, "invalid_path": InvalidPathError, "process_not_found": ProcessNotFoundError, "serial_configuration_conflict": SerialConfigurationConflictError}.get(error.get("code"), ProtocolError)
         raise error_type(error.get("message", "agent error"))
     return response.get("result", response)

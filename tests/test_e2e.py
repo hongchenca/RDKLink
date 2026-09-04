@@ -45,8 +45,14 @@ class E2ETest(unittest.TestCase):
             self.assertEqual(self.service.project_push(src, "project")["uploaded"], 1)
         started = self.service.project_run(subprocess.list2cmdline([sys.executable, "main.py"]))
         self.assertTrue(started["ok"])
-        output = self.service.serial_wait("X5_READY", timeout=2)
-        self.assertTrue(any("X5_READY" in line for line in output["lines"]), output)
+        output = {}
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            output = self.service.call("process_output", {"pid": started["pid"], "max_lines": 10})
+            if any(record["text"] == "X5_READY_2" and record["stream"] == "stdout" for record in output["records"]):
+                break
+            time.sleep(0.05)
+        self.assertTrue(any(record["text"] == "X5_READY_2" and record["stream"] == "stdout" for record in output["records"]), output)
 
     def test_path_escape_rejected(self):
         with self.assertRaises(Exception):

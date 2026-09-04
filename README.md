@@ -77,6 +77,8 @@ py -3 -m pip install -r requirements-serial.txt
 
 所有 GUI、MCP 和 CLI 串口操作都经过 RDK Agent 的同一个 Serial Broker。串口读取均为有界环形缓存，支持 `tail`、`read_since` 和模式等待。
 
+Linux Agent 的 `serial_list` 先使用 pyserial 枚举，再补扫 allowlist 内的 `/dev/ttyS*`、`/dev/ttyUSB*` 和 `/dev/ttyACM*` 节点，因此没有 udev 元数据的 RDK X5 板载 UART 也能显示。每个端口拥有独立的 RX/TX 缓冲和 sequence；同一端口重复使用相同波特率会复用会话，改变串口配置会返回 `serial_configuration_conflict`。记录中的 `bytes` 使用 base64 保存原始字节，`hex` 始终可用于二进制诊断；进程 stdout/stderr 不会进入串口缓存。
+
 ## GUI
 
 ```powershell

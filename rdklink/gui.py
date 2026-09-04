@@ -12,6 +12,15 @@ except ImportError as exc:  # pragma: no cover
 from .service_client import ServiceClient
 
 
+def read_log_tail(path: Path, max_bytes: int = 20_000) -> str:
+    if not path.exists():
+        return "No activity log yet"
+    with path.open("rb") as source:
+        source.seek(0, 2)
+        source.seek(max(0, source.tell() - max_bytes))
+        return source.read(max_bytes).decode("utf-8", errors="replace")
+
+
 class Page(QWidget):
     def __init__(self, title: str):
         super().__init__()
@@ -70,7 +79,7 @@ class MainWindow(QMainWindow):
 
     def refresh_activity(self) -> None:
         path = Path.home() / ".rdklink" / "logs" / "rdklink-service.log"
-        self.pages["Activity"].output.setPlainText(path.read_text(encoding="utf-8")[-20000:] if path.exists() else "No activity log yet")
+        self.pages["Activity"].output.setPlainText(read_log_tail(path))
 
 
 def main() -> None:

@@ -52,6 +52,11 @@ class McpProtocolTest(unittest.TestCase):
                     names = {tool["name"] for tool in responses[1]["result"]["tools"]}
                     self.assertIn("rdk_project_push", names)
                     self.assertEqual(json.loads(responses[2]["result"]["content"][0]["text"])["model"], "RDK X5")
+                    mcp.stdin.write("[]\n")
+                    mcp.stdin.flush()
+                    malformed = json.loads(mcp.stdout.readline())
+                    self.assertIsNone(malformed["id"])
+                    self.assertIn("error", malformed)
                 finally:
                     mcp.terminate()
                     mcp.wait(timeout=3)

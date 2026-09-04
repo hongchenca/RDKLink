@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 from .service_client import ServiceClient
 
+MCP_REQUEST_MAX_BYTES = 64 * 1024
+MCP_DISCARD_MAX_BYTES = 1024 * 1024
+
 
 def schema(properties: dict, required: list[str] | None = None) -> dict:
     value = {"type": "object", "properties": properties, "additionalProperties": False}
@@ -22,15 +25,15 @@ TOOLS = [
     {"name": "rdk_project_push", "description": "Incrementally upload a local project to the RDK device. Only changed files are transferred; output is bounded.", "inputSchema": schema({"local_path": {"type": "string", "description": "Windows local project directory."}, "remote_path": {"type": "string", "default": "project", "description": "Allowed remote project directory."}, "delete": {"type": "boolean", "default": False, "description": "Also delete remote files absent locally."}}, ["local_path"])},
     {"name": "rdk_project_run", "description": "Start a project command on the RDK device. Use the returned pid with output or stop.", "inputSchema": schema({"command": {"type": "string"}, "cwd": {"type": "string", "default": "project"}}, ["command"])},
     {"name": "rdk_project_stop", "description": "Stop a previously started RDK project process by pid.", "inputSchema": schema({"pid": {"type": "integer"}}, ["pid"])},
-    {"name": "rdk_process_output", "description": "Read bounded stdout/stderr records for a running or recently running process.", "inputSchema": schema({"pid": {"type": "integer"}, "max_lines": {"type": "integer", "default": 200, "minimum": 1, "maximum": 1000}}, ["pid"])},
-    {"name": "rdk_remote_file_read", "description": "Read one allowed remote file for diagnosis. Paths outside the filesystem allowlist are rejected. Content is bounded.", "inputSchema": schema({"path": {"type": "string"}, "max_bytes": {"type": "integer", "default": 262144, "minimum": 1, "maximum": 4194304}}, ["path"])},
+    {"name": "rdk_process_output", "description": "Read bounded stdout/stderr records for a running or recently running process.", "inputSchema": schema({"pid": {"type": "integer"}, "max_lines": {"type": "integer", "default": 200, "minimum": 1, "maximum": 200}}, ["pid"])},
+    {"name": "rdk_remote_file_read", "description": "Read one allowed remote file for diagnosis. Paths outside the filesystem allowlist are rejected. Content is bounded.", "inputSchema": schema({"path": {"type": "string"}, "max_bytes": {"type": "integer", "default": 262144, "minimum": 1, "maximum": 262144}}, ["path"])},
     {"name": "rdk_remote_file_tail", "description": "Read the last bounded lines of an allowed remote text file without consuming it.", "inputSchema": schema({"path": {"type": "string"}, "max_lines": {"type": "integer", "default": 100, "minimum": 1, "maximum": 1000}}, ["path"])},
     {"name": "rdk_serial_list", "description": "List serial ports visible to the RDK agent and whether RDKLink currently owns them.", "inputSchema": schema({})},
-    {"name": "rdk_serial_open", "description": "Open one allowlisted serial port through the shared Serial Broker. GUI and MCP share this connection.", "inputSchema": schema({"port": {"type": "string"}, "baudrate": {"type": "integer", "default": 115200, "minimum": 1, "maximum": 4000000}}, ["port"])},
+    {"name": "rdk_serial_open", "description": "Open one allowlisted serial port through the shared Serial Broker. Re-opening with the same configuration reuses the session; a different baudrate or framing is rejected. GUI and MCP share this connection.", "inputSchema": schema({"port": {"type": "string", "description": "Allowlisted device path such as /dev/ttyS1 or COM3."}, "baudrate": {"type": "integer", "default": 115200, "minimum": 1, "maximum": 4000000}, "bytesize": {"type": "integer", "default": 8, "enum": [5, 6, 7, 8]}, "parity": {"type": "string", "default": "N", "enum": ["N", "E", "O", "M", "S"]}, "stopbits": {"type": "number", "default": 1, "enum": [1, 1.5, 2]}}, ["port"])},
     {"name": "rdk_serial_close", "description": "Close a serial port owned by the shared Serial Broker.", "inputSchema": schema({"port": {"type": "string"}}, ["port"])},
-    {"name": "rdk_serial_tail", "description": "Read bounded recent serial traffic. Use for UART diagnosis; this does not consume the buffer.", "inputSchema": schema({"port": {"type": "string"}, "baudrate": {"type": "integer", "default": 115200}, "max_records": {"type": "integer", "default": 100, "minimum": 1, "maximum": 1000}}, ["port"])},
-    {"name": "rdk_serial_read_since", "description": "Read serial records after a sequence number for loss-aware polling. Response includes next_sequence and truncation.", "inputSchema": schema({"port": {"type": "string"}, "sequence": {"type": "integer", "default": 0}, "max_records": {"type": "integer", "default": 300, "maximum": 1000}}, ["port"])},
-    {"name": "rdk_serial_wait", "description": "Wait up to timeout seconds for serial text to contain pattern. On timeout inspect tail and process output.", "inputSchema": schema({"port": {"type": "string"}, "pattern": {"type": "string"}, "baudrate": {"type": "integer", "default": 115200}, "timeout": {"type": "number", "default": 10, "maximum": 120}, "max_records": {"type": "integer", "default": 100, "maximum": 1000}}, ["port", "pattern"])},
+    {"name": "rdk_serial_tail", "description": "Read a bounded amount of recent serial traffic from one RDK device. Use this when analyzing recent UART output. This does not consume or remove data from the serial buffer.", "inputSchema": schema({"port": {"type": "string", "description": "The exact allowlisted serial port to inspect."}, "baudrate": {"type": "integer", "default": 115200}, "max_records": {"type": "integer", "default": 100, "minimum": 1, "maximum": 300}}, ["port"])},
+    {"name": "rdk_serial_read_since", "description": "Read serial records after a sequence number for loss-aware polling. Response includes next_sequence and truncation.", "inputSchema": schema({"port": {"type": "string"}, "sequence": {"type": "integer", "default": 0}, "max_records": {"type": "integer", "default": 300, "maximum": 300}}, ["port"])},
+    {"name": "rdk_serial_wait", "description": "Wait on exactly one serial port for an RX record whose decoded text contains pattern. Process stdout/stderr and other ports cannot satisfy this wait; TX is excluded unless include_tx is explicitly true. On timeout inspect serial_tail and process_output.", "inputSchema": schema({"port": {"type": "string"}, "pattern": {"type": "string"}, "baudrate": {"type": "integer", "default": 115200}, "timeout": {"type": "number", "default": 10, "maximum": 120}, "max_records": {"type": "integer", "default": 100, "maximum": 300}, "include_tx": {"type": "boolean", "default": False, "description": "Also allow locally transmitted TX records to satisfy the pattern."}}, ["port", "pattern"])},
     {"name": "rdk_serial_write", "description": "Write bounded text to an already-open serial port. This mutates device state.", "inputSchema": schema({"port": {"type": "string"}, "data": {"type": "string", "maxLength": 4096}}, ["port", "data"])},
 ]
 
@@ -43,10 +46,10 @@ def dispatch(s: ServiceClient, name: str, a: dict) -> dict:
         return s.call(mapping[name], params)
     if name == "rdk_remote_file_read": return s.call("remote_file_read", {"path": a["path"], "max_bytes": a.get("max_bytes", 262144)})
     if name == "rdk_remote_file_tail":
-        data = s.call("remote_file_read", {"path": a["path"], "max_bytes": 4 * 1024 * 1024}); lines = data.get("content", "").splitlines(); limit = max(1, min(a.get("max_lines", 100), 1000))
-        return {"ok": True, "path": a["path"], "lines": lines[-limit:], "truncated": len(lines) > limit}
+        data = s.call("remote_file_read", {"path": a["path"], "max_bytes": 256 * 1024}); lines = data.get("content", "").splitlines(); limit = max(1, min(a.get("max_lines", 100), 1000))
+        return {"ok": True, "path": a["path"], "lines": lines[-limit:], "truncated": bool(data.get("truncated")) or len(lines) > limit}
     if name == "rdk_serial_tail": return s.call("serial_tail", {"port": a["port"], "baudrate": a.get("baudrate", 115200), "max_records": a.get("max_records", 100)})
-    if name == "rdk_serial_wait": return s.call("serial_wait", {"port": a["port"], "pattern": a["pattern"], "timeout": a.get("timeout", 10), "max_records": a.get("max_records", 100)})
+    if name == "rdk_serial_wait": return s.call("serial_wait", {"port": a["port"], "pattern": a["pattern"], "baudrate": a.get("baudrate", 115200), "timeout": a.get("timeout", 10), "max_records": a.get("max_records", 100), "include_tx": a.get("include_tx", False)})
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -56,7 +59,19 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[logging.handlers.RotatingFileHandler(log_dir / "rdklink-mcp.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")])
     os.environ["RDKLINK_SOURCE"] = "MCP"
     service = ServiceClient()
-    for line in sys.stdin:
+    while raw_line := sys.stdin.buffer.readline(MCP_REQUEST_MAX_BYTES + 1):
+        if len(raw_line) > MCP_REQUEST_MAX_BYTES:
+            print(json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": "MCP request exceeds 65536 bytes", "type": "ValueError"}}, ensure_ascii=False), flush=True)
+            discarded = len(raw_line)
+            while not raw_line.endswith(b"\n") and discarded < MCP_DISCARD_MAX_BYTES:
+                raw_line = sys.stdin.buffer.readline(MCP_REQUEST_MAX_BYTES + 1)
+                if not raw_line:
+                    break
+                discarded += len(raw_line)
+            if not raw_line.endswith(b"\n") and discarded >= MCP_DISCARD_MAX_BYTES:
+                break
+            continue
+        line = raw_line.decode("utf-8", errors="replace")
         if not line.strip(): continue
         req = {}
         try:
@@ -69,7 +84,8 @@ def main() -> None:
             else: raise ValueError(f"unsupported MCP method: {method}")
             print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": out}, ensure_ascii=False), flush=True)
         except Exception as exc:
-            print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": -32000, "message": str(exc), "type": exc.__class__.__name__}}, ensure_ascii=False), flush=True)
+            request_id = req.get("id") if isinstance(req, dict) else None
+            print(json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32000, "message": str(exc), "type": exc.__class__.__name__}}, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__": main()
